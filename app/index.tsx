@@ -12,6 +12,7 @@ import {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { Timer } from "./create-tracker";
 import { router, useFocusEffect } from "expo-router";
+import ProgressBar from "./components/progressBar";
 
 interface TimerWithStatus extends Timer {
   status: "Running" | "Paused" | "Completed";
@@ -24,34 +25,6 @@ interface GroupedTimers {
 
 const STORAGE_KEY = "@timers";
 const HISTORY_STORAGE_KEY = "@timer_history";
-
-const ProgressBar = ({ progress }: { progress: number }) => {
-  const [width] = useState(new Animated.Value(progress));
-
-  useEffect(() => {
-    Animated.timing(width, {
-      toValue: progress,
-      duration: 200,
-      useNativeDriver: false,
-    }).start();
-  }, [progress, width]);
-
-  return (
-    <View style={styles.progressBarContainer}>
-      <Animated.View
-        style={[
-          styles.progressBar,
-          {
-            width: width.interpolate({
-              inputRange: [0, 1],
-              outputRange: ["0%", "100%"],
-            }),
-          },
-        ]}
-      />
-    </View>
-  );
-};
 
 const HomeScreen = () => {
   const [groupedTimers, setGroupedTimers] = useState<GroupedTimers>({});
@@ -104,6 +77,16 @@ const HomeScreen = () => {
     }, [])
   );
 
+  const persistTimers = async (groupedTimers: GroupedTimers) => {
+    try {
+      // Flatten groupedTimers into a single array
+      const allTimers = Object.values(groupedTimers).flat();
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(allTimers));
+    } catch (error) {
+      console.error("Error persisting timers to AsyncStorage:", error);
+    }
+  };
+
   const toggleCategory = (category: string) => {
     setExpandedCategories((prev) =>
       prev.includes(category)
@@ -122,7 +105,6 @@ const HomeScreen = () => {
     (timerId: string, updates: Partial<TimerWithStatus>) => {
       setGroupedTimers((prevGrouped) => {
         const newGrouped = { ...prevGrouped };
-
         for (const category of Object.keys(newGrouped)) {
           const timerIndex = newGrouped[category].findIndex(
             (t) => t.id === timerId
@@ -135,7 +117,6 @@ const HomeScreen = () => {
             break;
           }
         }
-
         return newGrouped;
       });
     },
@@ -170,24 +151,41 @@ const HomeScreen = () => {
   const startTimer = (timer: TimerWithStatus) => {
     if (timer.status === "Running" || timer.remainingTime === 0) return;
 
-    const intervalId = setInterval(() => {
-      updateTimer(timer.id, (prev) => {
-        if (prev.remainingTime <= 1) {
-          clearInterval(activeTimers[timer.id]);
-          const newActiveTimers = { ...activeTimers };
-          delete newActiveTimers[timer.id];
-          setActiveTimers(newActiveTimers);
-          setCompletedTimer(timer);
-          // Save to history when timer completes
-          saveToHistory(timer);
-          return {
-            remainingTime: 0,
-            status: "Completed",
-          };
+    const intervalId = setInterval(async () => {
+      setGroupedTimers((prevGrouped) => {
+        const newGrouped = { ...prevGrouped };
+        for (const category of Object.keys(newGrouped)) {
+          const timerIndex = newGrouped[category].findIndex(
+            (t) => t.id === timer.id
+          );
+          if (timerIndex !== -1) {
+            const updatedTimer = { ...newGrouped[category][timerIndex] };
+            if (updatedTimer.remainingTime <= 1) {
+              clearInterval(intervalId);
+              setCompletedTimer(updatedTimer);
+              saveToHistory(updatedTimer);
+              updatedTimer.status = "Completed";
+              updatedTimer.remainingTime = 0;
+
+              // Remove the completed timer
+              newGrouped[category].splice(timerIndex, 1);
+
+              // Remove category if it becomes empty
+              if (newGrouped[category].length === 0) {
+                delete newGrouped[category];
+              }
+
+              // Update AsyncStorage
+              persistTimers(newGrouped);
+
+              break;
+            } else {
+              updatedTimer.remainingTime -= 1;
+            }
+            newGrouped[category][timerIndex] = updatedTimer;
+          }
         }
-        return {
-          remainingTime: prev.remainingTime - 1,
-        };
+        return newGrouped;
       });
     }, 1000);
 
